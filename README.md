@@ -1,6 +1,6 @@
 # 2025ML-spamEmail
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://2025spamemail.streamlit.app/)
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://spame-mail.streamlit.app/)
 
 垃圾郵件（Spam Email）分類專案：使用 scikit-learn 建立完整文字處理與分類流程，包含前處理、特徵抽取、模型訓練、指標與視覺化，以及 Typer CLI 與 Streamlit 互動式網頁介面。
 
@@ -82,7 +82,7 @@ If using HTTPS instead of SSH, replace the `git remote add origin` line accordin
 
 ## 部署到 Streamlit Cloud
 
-目標 Demo： https://2025spamemail.streamlit.app/
+目標 Demo： https://spame-mail.streamlit.app/
 
 1) 使用 GitHub 帳號登入 https://share.streamlit.io/
 2) 建立新 App，選取你的倉庫 `handsomedudu/hw3`
