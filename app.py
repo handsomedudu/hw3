@@ -2,21 +2,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from src.spam_email.data import load_dataset
-from src.spam_email.model import train, save_model, load_model, predict_text
+from src.spam_email.model import train, save_model, predict_text
 from src.spam_email.visualize import plot_confusion_matrix, plot_roc_curve
-
 
 st.set_page_config(page_title="Spam Email Classifier", layout="wide")
 
 st.title("Spam Email Classifier")
-st.caption("End-to-end pipeline: preprocessing, training, metrics, and live prediction")
+st.caption("EDA, training, metrics, PR/ROC, and live prediction")
 
 with st.sidebar:
     st.header("資料與設定")
@@ -37,6 +36,50 @@ def read_df(uploaded_file, default_path: str) -> pd.DataFrame:
     else:
         df = load_dataset(default_path)
     return df
+
+
+# Helpers to align with reference demo
+import re
+URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+EMAIL_RE = re.compile(r"\b[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}\b")
+PHONE_RE = re.compile(r"\b(?:\+?\d[\d\-\s]{7,}\d)\b")
+
+
+def normalize_text(text: str, keep_numbers: bool = False) -> str:
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+    t = text.lower()
+    t = URL_RE.sub("<URL>", t)
+    t = EMAIL_RE.sub("<EMAIL>", t)
+    t = PHONE_RE.sub("<PHONE>", t)
+    if not keep_numbers:
+        t = re.sub(r"\d+", "<NUM>", t)
+    t = re.sub(r"[^\w\s<>]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+from collections import Counter
+
+
+def token_topn(series: pd.Series, topn: int) -> List[Tuple[str, int]]:
+    counter: Counter = Counter()
+    for s in series.astype(str):
+        counter.update(s.split())
+    return counter.most_common(topn)
+
+
+def list_datasets() -> list[str]:
+    paths: list[str] = []
+    for root in ("datasets", os.path.join("datasets", "processed")):
+        if os.path.isdir(root):
+            for name in os.listdir(root):
+                p = os.path.join(root, name)
+                if name.lower().endswith(".csv") and os.path.isfile(p):
+                    paths.append(p)
+    if not paths and os.path.exists("data/sample_spam.csv"):
+        paths.append("data/sample_spam.csv")
+    return sorted(paths)
 
 
 if "train_result" not in st.session_state:
@@ -64,7 +107,7 @@ with tab_eda:
     st.subheader("訊息長度分佈")
     lens = df["text"].astype(str).str.len()
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(5,3))
+    fig, ax = plt.subplots(figsize=(5, 3))
     ax.hist(lens, bins=30, color="#4C78A8")
     ax.set_xlabel("Length (chars)")
     ax.set_ylabel("Count")
@@ -75,18 +118,18 @@ with tab_train:
     st.caption("選好左側參數後點擊按鈕開始訓練")
     if train_btn:
         with st.spinner("Training model..."):
-            # Temporarily override vectorizer params by monkey-patching build_pipeline
             from src.spam_email import model as model_mod
             orig_build = model_mod.build_pipeline
+
             def custom_build(model: str = "logreg", max_features_param: int = 20000):
                 pipe = orig_build(model=model, max_features=max_features)
-                # adjust ngram
                 if ngram == "1":
-                    pipe.named_steps["tfidf"].ngram_range = (1,1)
+                    pipe.named_steps["tfidf"].ngram_range = (1, 1)
                 else:
-                    pipe.named_steps["tfidf"].ngram_range = (1,2)
+                    pipe.named_steps["tfidf"].ngram_range = (1, 2)
                 return pipe
-            model_mod.build_pipeline = custom_build  # swap
+
+            model_mod.build_pipeline = custom_build
             try:
                 res = train(df, model=model_choice, test_size=float(test_size))
             finally:
@@ -142,16 +185,27 @@ with tab_metrics:
         if wrong.empty:
             st.success("目前沒有錯誤分類的案例（或樣本太少）")
         else:
-            # map labels for readability
-            wrong = wrong.assign(true_label=lambda d: d.true.map({0:"ham",1:"spam"}), pred_label=lambda d: d.pred.map({0:"ham",1:"spam"}))
-            st.dataframe(wrong[["text","true_label","pred_label"]], use_container_width=True)
+            wrong = wrong.assign(true_label=lambda d: d.true.map({0: "ham", 1: "spam"}),
+                                 pred_label=lambda d: d.pred.map({0: "ham", 1: "spam"}))
+            st.dataframe(wrong[["text", "true_label", "pred_label"]], use_container_width=True)
 
 with tab_predict:
-    st.subheader("即時預測")
+    st.subheader("即時預測與模型檔案")
     if res is None:
-        st.info("請先完成模型訓練")
+        st.info("請先完成模型訓練，或在專案根目錄放置 models/ 以載入既有模型")
     else:
-        user_text = st.text_area("輸入要判斷的訊息文字", height=120)
+        c_ex1, c_ex2 = st.columns(2)
+        with c_ex1:
+            if st.button("套用 Spam 範例"):
+                st.session_state["input_text"] = "Free entry in 2 a wkly comp to win cash now! Call +44 906-170-1461 to claim prize"
+        with c_ex2:
+            if st.button("套用 Ham 範例"):
+                st.session_state["input_text"] = "Ok, I'll see you at 7 pm for dinner. Thanks!"
+
+        if "input_text" not in st.session_state:
+            st.session_state["input_text"] = ""
+
+        user_text = st.text_area("輸入要判斷的訊息文字", key="input_text", height=120)
         if st.button("預測") and user_text.strip():
             out = predict_text(res.pipeline, user_text)
             label = "spam" if out["pred"] == 1 else "ham"
@@ -163,3 +217,63 @@ with tab_predict:
                 os.makedirs(Path(model_path).parent, exist_ok=True)
                 save_model(res.pipeline, model_path)
                 st.success(f"Saved to {model_path}")
+
+    # Additional: Use pre-trained artifacts in models/ to mimic demo visuals
+    st.divider()
+    st.subheader("使用 models/ 既有模型的可視化")
+    models_dir = st.text_input("Models 目錄", value="models")
+    threshold = st.slider("決策門檻", min_value=0.1, max_value=0.9, value=0.5, step=0.01)
+    try:
+        import joblib
+        from sklearn.metrics import precision_recall_curve, auc as sk_auc, roc_curve, confusion_matrix
+        from sklearn.model_selection import train_test_split
+
+        vec_p = os.path.join(models_dir, "spam_tfidf_vectorizer.joblib")
+        clf_p = os.path.join(models_dir, "spam_logreg_model.joblib")
+        if os.path.exists(vec_p) and os.path.exists(clf_p):
+            vec = joblib.load(vec_p)
+            clf = joblib.load(clf_p)
+            X = df["text"].astype(str).fillna("")
+            y = (df["label"].astype(str).str.lower() == "spam").astype(int).values
+            Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=float(test_size), random_state=42, stratify=y)
+            Xte_vec = vec.transform(Xte)
+            proba = clf.predict_proba(Xte_vec)[:, 1]
+            pred = (proba >= threshold).astype(int)
+
+            cm = confusion_matrix(yte, pred)
+            cm_df = pd.DataFrame(cm, index=["true_0", "true_1"], columns=["pred_0", "pred_1"]) 
+            st.write("Confusion matrix (models/)")
+            st.dataframe(cm_df)
+
+            fpr, tpr, _ = roc_curve(yte, proba)
+            roc_auc = sk_auc(fpr, tpr)
+            prec, rec, _ = precision_recall_curve(yte, proba)
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(1, 2, figsize=(10, 4))
+            ax[0].plot(fpr, tpr, label=f"AUC={roc_auc:.3f}")
+            ax[0].plot([0, 1], [0, 1], linestyle="--", color="gray")
+            ax[0].set_title("ROC")
+            ax[0].set_xlabel("FPR"); ax[0].set_ylabel("TPR")
+            from sklearn.metrics import PrecisionRecallDisplay
+            PrecisionRecallDisplay(precision=prec, recall=rec).plot(ax=ax[1])
+            ax[1].set_title("Precision-Recall")
+            st.pyplot(fig)
+
+            st.write("Threshold sweep (precision/recall/f1)")
+            ths = np.round(np.linspace(0.3, 0.8, 11), 3)
+            rows = []
+            from sklearn.metrics import precision_score, recall_score, f1_score
+            for t in ths:
+                p = (proba >= t).astype(int)
+                rows.append({
+                    "threshold": t,
+                    "precision": float(precision_score(yte, p, zero_division=0)),
+                    "recall": float(recall_score(yte, p, zero_division=0)),
+                    "f1": float(f1_score(yte, p, zero_division=0)),
+                })
+            st.dataframe(pd.DataFrame(rows))
+        else:
+            st.info("未找到 models/ 下的預訓練模型檔案，若要呈現與 Demo 相同的圖表，請放置 spam_tfidf_vectorizer.joblib 與 spam_logreg_model.joblib。")
+    except Exception as e:
+        st.warning(f"無法載入 models/ 模型或繪圖：{e}")
+
