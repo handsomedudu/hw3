@@ -117,3 +117,63 @@ def predict_text(pipeline: Pipeline, text: str) -> Dict[str, float | int]:
     pred = int(pipeline.predict([text])[0])
     return {"pred": pred, "proba_spam": proba}
 
+
+def get_feature_names(pipeline: Pipeline):
+    tfidf = pipeline.named_steps.get("tfidf")
+    if tfidf is None:
+        return None
+    try:
+        return tfidf.get_feature_names_out()
+    except Exception:
+        return None
+
+
+def top_features(pipeline: Pipeline, k: int = 20):
+    """Return top-k features for spam and ham based on model weights.
+
+    For LogisticRegression: use coefficients (positive -> spam, negative -> ham)
+    For MultinomialNB: use log-prob difference between classes
+    """
+    feats = get_feature_names(pipeline)
+    if feats is None:
+        return None
+    clf = pipeline.named_steps.get("clf")
+    if clf is None:
+        return None
+
+    import numpy as np
+
+    if isinstance(clf, LogisticRegression):
+        # coef_ shape: (1, n_features)
+        coefs = clf.coef_.ravel()
+        top_spam_idx = np.argsort(coefs)[-k:][::-1]
+        top_ham_idx = np.argsort(coefs)[:k]
+        return {
+            "spam": [(feats[i], float(coefs[i])) for i in top_spam_idx],
+            "ham": [(feats[i], float(coefs[i])) for i in top_ham_idx],
+        }
+    elif isinstance(clf, MultinomialNB):
+        # feature_log_prob_ shape: (2, n_features) for classes [0=ham,1=spam]
+        log_prob = clf.feature_log_prob_
+        diff = (log_prob[1] - log_prob[0])  # positive -> spam
+        top_spam_idx = np.argsort(diff)[-k:][::-1]
+        top_ham_idx = np.argsort(diff)[:k]
+        return {
+            "spam": [(feats[i], float(diff[i])) for i in top_spam_idx],
+            "ham": [(feats[i], float(diff[i])) for i in top_ham_idx],
+        }
+    else:
+        return None
+
+
+def misclassified_examples(pipeline: Pipeline, X: pd.Series, y: pd.Series, n: int = 10) -> pd.DataFrame:
+    import pandas as pd
+
+    y_pred = pipeline.predict(X)
+    df = pd.DataFrame({
+        "text": X.values,
+        "true": y.values,
+        "pred": y_pred,
+    })
+    wrong = df[df["true"] != df["pred"]]
+    return wrong.head(n)
